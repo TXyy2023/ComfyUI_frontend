@@ -179,7 +179,11 @@ import { isHdrImageFilename } from '@/utils/hdrFormatUtil'
 
 import { getAssetType } from '../composables/media/assetMappers'
 import { startAssetDrag } from '../utils/assetDragUtil'
-import { getAssetFileUrl, getAssetUrl } from '../utils/assetUrlUtil'
+import {
+  getAssetFileUrl,
+  getAssetUrl,
+  resolveMediaSrc
+} from '../utils/assetUrlUtil'
 import { useMediaAssetActions } from '../composables/useMediaAssetActions'
 import type { AssetItem } from '../schemas/assetSchema'
 import {
@@ -282,11 +286,10 @@ const adaptedAsset = computed(() => {
     src:
       fileKind.value === '3D'
         ? getAssetUrl(asset)
-        : asset.thumbnail_url ||
-          asset.preview_url ||
-          (fileKind.value === 'video' || fileKind.value === 'audio'
-            ? getAssetFileUrl(asset, { disposition: 'inline' })
-            : ''),
+        : fileKind.value === 'video' || fileKind.value === 'audio'
+          ? resolveMediaSrc(asset.thumbnail_url || asset.preview_url) ||
+            getAssetFileUrl(asset, { disposition: 'inline' })
+          : asset.thumbnail_url || asset.preview_url || '',
     preview_url: asset.preview_url,
     preview_id: asset.preview_id,
     size: asset.size,

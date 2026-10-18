@@ -107,12 +107,6 @@ const {
   selectTab?: (path: string) => Promise<boolean>
   workflowDetached?: boolean
   targetUnavailable?: boolean
-  /**
-   * PM-1996: a turn has finished on the bound tab and that tab has no nodes
-   * on it. Outranks every other notice context below, because every one of
-   * those is advice about which workflow you are looking at, and this one is
-   * a correction of what the turn just told you about its contents.
-   */
   canvasEmptyAfterTurn?: boolean
   getMentionNodes?: () => SelectedNode[]
   paywallPresentation?: AgentPaywallPresentation

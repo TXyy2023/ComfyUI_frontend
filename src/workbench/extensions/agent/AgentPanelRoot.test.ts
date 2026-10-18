@@ -8764,6 +8764,25 @@ describe('AgentPanelRoot workflow binding', () => {
     ).toBeInTheDocument()
   })
 
+  it('marks a mismatched or switched-away canvas unavailable', async () => {
+    makeTab('wf-42')
+    mockMessagesEndpoint('wf-42')
+    const setCanvasSyncGate = vi.spyOn(
+      useAgentConversationStore(),
+      'setCanvasSyncGate'
+    )
+
+    await renderAndSend('add a node')
+
+    const [gate] = setCanvasSyncGate.mock.calls.at(-1) ?? []
+    expect(gate?.('wf-other')).toBe('unavailable')
+
+    workflowStore.activeWorkflow = addTab('workflows/other.json')
+    await nextTick()
+
+    expect(gate?.('wf-42')).toBe('unavailable')
+  })
+
   it('shows a sticky error toast when the doc-host permanently refuses the subscribe', async () => {
     makeTab('wf-42')
     mockMessagesEndpoint('wf-42')

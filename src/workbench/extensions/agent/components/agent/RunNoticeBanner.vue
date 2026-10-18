@@ -20,10 +20,6 @@ const contextMessages = {
   following: 'agent.targetFollowsVisibleWorkflow',
   mismatch: 'agent.viewingDifferentWorkflow',
   unavailable: 'agent.targetWorkflowUnavailable',
-  // PM-1996: the agent finished a turn and this tab has no nodes on it. Said
-  // by the panel, which can see the canvas, rather than left to the turn's
-  // prose, which has offered to export and save a blank workflow -- and
-  // pointed at a menu that does not exist -- while the canvas was empty.
   emptyCanvas: 'agent.canvasIsEmptyAfterTurn'
 } as const satisfies Record<NonNullable<typeof context>, string>
 const defaultNotice = computed(() =>

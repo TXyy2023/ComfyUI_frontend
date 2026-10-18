@@ -49,6 +49,10 @@ vi.mock(import('@/scripts/api'), () => ({
 import { app } from '@/scripts/app'
 import { api } from '@/scripts/api'
 import { ChangeTracker } from '@/scripts/changeTracker'
+import {
+  bindCanvasTracker,
+  invalidateCanvasTracker
+} from '@/platform/workflow/core/canvasTrackerOwnership'
 
 let nodeIdCounter = 0
 let workflowPathCounter = 0
@@ -491,13 +495,10 @@ describe('ChangeTracker', () => {
 
       describe('canvas ownership', () => {
         it('does not copy the canvas graph into a workflow activated without a graph load', () => {
-          // Workflow A owns the canvas (afterLoadNewGraph bound it).
           const trackerA = createTracker(createState(2))
-          ChangeTracker.bindCanvasTracker(trackerA)
+          bindCanvasTracker(trackerA)
           mockCanvasState(createState(2))
 
-          // An extension calls useWorkflowStore().openWorkflow(B) directly:
-          // B becomes activeWorkflow but A's graph is still on the canvas.
           const originalB = createState(0)
           const trackerB = createTracker(originalB)
 
@@ -513,7 +514,7 @@ describe('ChangeTracker', () => {
 
         it('does not persist the canvas graph via deactivate() into an unbound workflow', () => {
           const trackerA = createTracker(createState(2))
-          ChangeTracker.bindCanvasTracker(trackerA)
+          bindCanvasTracker(trackerA)
           mockCanvasState(createState(2))
 
           const originalB = createState(0)
@@ -527,10 +528,10 @@ describe('ChangeTracker', () => {
 
         it('captures the canvas once the tracker is bound to the canvas', () => {
           const trackerA = createTracker(createState(2))
-          ChangeTracker.bindCanvasTracker(trackerA)
+          bindCanvasTracker(trackerA)
 
           const trackerB = createTracker(createState(0))
-          ChangeTracker.bindCanvasTracker(trackerB)
+          bindCanvasTracker(trackerB)
           const canvasState = createState(3)
           mockCanvasState(canvasState)
 
@@ -553,7 +554,7 @@ describe('ChangeTracker', () => {
         it('silently skips capture while the canvas is being replaced', () => {
           const original = createState(0)
           const tracker = createTracker(original)
-          ChangeTracker.invalidateCanvasTracker()
+          invalidateCanvasTracker()
           mockCanvasState(createState(1))
 
           tracker.captureCanvasState()
@@ -721,7 +722,7 @@ describe('ChangeTracker', () => {
 
         tracker.captureCanvasState()
         mockCanvasState(lateState)
-        ChangeTracker.bindCanvasTracker(createTracker())
+        bindCanvasTracker(createTracker())
         useWorkflowStore().activeWorkflow = fromPartial({
           changeTracker: tracker
         })

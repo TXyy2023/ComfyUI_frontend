@@ -14,6 +14,7 @@ test.describe(
       agentPanel,
       page
     }) => {
+      test.setTimeout(30_000)
       const paywall = agentPanel.creditsExhaustedPaywall
 
       agentBilling.setFundingState('exhausted')

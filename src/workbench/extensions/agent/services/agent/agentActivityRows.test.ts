@@ -97,4 +97,22 @@ describe('foldActivity', () => {
 
     expect(rows[0]).toMatchObject({ count: 2, ok: true })
   })
+
+  it('keeps a folded row unconfirmed when any write was unconfirmed', () => {
+    const rows = foldActivity([
+      { ...tool('add_node', true), canvasConfirmed: false },
+      { ...tool('add_node', true), canvasConfirmed: true }
+    ])
+
+    expect(rows[0]).toMatchObject({ count: 2, canvasConfirmed: false })
+  })
+
+  it('records a folded row as confirmed when every observed verdict is confirmed', () => {
+    const rows = foldActivity([
+      { ...tool('add_node', true), canvasConfirmed: true },
+      { ...tool('add_node', true), canvasConfirmed: true }
+    ])
+
+    expect(rows[0]).toMatchObject({ count: 2, canvasConfirmed: true })
+  })
 })

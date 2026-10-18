@@ -9,6 +9,8 @@ import { useI18n } from 'vue-i18n'
 import { computed } from 'vue'
 
 import type { ActivityPart } from '../../../services/agent/agentMessageParts'
+import { isUnconfirmedCanvasWrite } from '../../../services/agent/agentMessageParts'
+import { toolCanMutateCanvas } from '../../../services/agent/agentToolClassification'
 
 import ActivityTrace from './ActivityTrace.vue'
 
@@ -16,20 +18,14 @@ const { parts } = defineProps<{ parts: readonly ActivityPart[] }>()
 
 const { t } = useI18n()
 
-/**
- * PM-1343: the summary is the turn's own headline claim about its work, and
- * it is the one line the person reads without expanding anything. A turn that
- * wrote to the graph and was never observed to change the canvas must not
- * head itself "Worked" -- that is the false completion claim, in the panel's
- * own voice rather than the model's. Collapsed-by-default is exactly why this
- * belongs on the trigger and not only on the row inside.
- */
 const unconfirmedCanvasWrite = computed(() =>
   parts.some(
     (part) =>
       part.type === 'tool' &&
-      part.canvasConfirmed === false &&
-      part.ok !== false
+      (isUnconfirmedCanvasWrite(part) ||
+        (part.ok === true &&
+          part.state === 'streaming' &&
+          toolCanMutateCanvas(part.name)))
   )
 )
 </script>

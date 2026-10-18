@@ -13,6 +13,7 @@ import {
   isOpenAskPart,
   toAskOrNoticePart
 } from './agentMessageParts'
+import { toolCanMutateCanvas } from './agentToolClassification'
 
 type AttachmentKind = 'image' | 'video' | 'audio'
 
@@ -320,7 +321,10 @@ function parseToolCallEntry(
       callId: toolCallId || id,
       name: toolName,
       state,
-      ...toolPartOptionalFields(ok, skill, durationMs)
+      ...toolPartOptionalFields(ok, skill, durationMs),
+      ...(ok === true && toolCanMutateCanvas(toolName)
+        ? { canvasConfirmed: false }
+        : {})
     }
   }
 }

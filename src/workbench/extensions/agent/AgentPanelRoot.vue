@@ -2,7 +2,7 @@
 import './agentPanel.css'
 
 import type { AgentAnswerRequest } from '@comfyorg/ingest-types'
-import { useClipboard } from '@vueuse/core'
+import { useClipboard, useEventListener } from '@vueuse/core'
 import { storeToRefs } from 'pinia'
 import {
   computed,
@@ -142,6 +142,7 @@ import {
   toAgentPaywallReason
 } from './services/agent/agentPaywallPresentation'
 import type { CanvasConfirmation } from './services/agent/agentEventTransport'
+import { toolCanClaimCanvasContent } from './services/agent/agentToolClassification'
 import { createAgentEventSource } from './services/agent/agentEventSource'
 import { resolveAgentIdentity } from './services/agent/agentIdentity'
 import { useAgentChatHistoryStore } from './stores/agent/agentChatHistoryStore'
@@ -1036,54 +1037,7 @@ const isCrdtDevPanelEnabled = resolveDebugPanelEnabled(
 )
 const { activeTurnId: conversationTurnId } = storeToRefs(conversationStore)
 
-// PM-1575: a chat tool-call's own `status` says nothing about whether its
-// effect has actually reached the canvas -- the CRDT doc_update travels a
-// separate, unrelated listener (see agentEventTransport.ts's file header).
-// Gate the transport's tool-call "done" affordance on canvas catch-up only
-// while the CRDT follower is actually active, and re-check any parts it held
-// back every time the bound workflow applies a fresh update.
-//
-// `agentPanelStore.enabled` alone is NOT that signal: it is the product
-// feature flag ("is the agent panel available at all"), which is on in any
-// environment or test that exercises the panel, whether or not a CRDT doc
-// subscription for the bound workflow actually exists yet. Gating on it
-// alone deferred every mutating tool call (add_node, set_widget, ...) to
-// 'streaming' even when no doc_subscribed frame had ever been received --
-// e.g. in agentPanel.spec.ts and every other spec that drives chat events
-// without also standing up a doc host -- so nothing was ever going to call
-// notifyCanvasCaughtUp() to rescue it, and the row (and the composing
-// "Working..." status derived from every part being settled) stayed stuck
-// until the 30s STALE_AFTER_MS fallback. `crdtStatus.value.connected` is the
-// actual "the follower is subscribed and could receive a doc_update" signal
-// (flipped true only by a real `doc_subscribed { ok: true }` frame); a
-// disabled panel never starts the follower, so this implies `enabled` too.
-// Read `outcomes.appliedLive`, never `outcomes.applied`: `applied` also
-// counts a subscribe's own one-time catch-up frame, which lands whenever the
-// follower (re)subscribes to the bound workflow and has nothing to do with
-// any tool call in flight. Gating on raw `applied` made the FIRST
-// canvas-mutating tool call after any (re)subscribe -- effectively every
-// tool call, since a `running` frame is never sent in practice, see
-// agentEventTransport.ts's file header -- read that unrelated catch-up as
-// its own matching update and settle to 'done' immediately, defeating the
-// wait this gate exists for.
-//
-// PM-1343 / PM-1586 / PM-1996: `connected` alone was the whole gate, and that
-// is the defect the three tickets share. Read as a boolean it says "a
-// doc_update may still arrive", so the confirmation check ran only while
-// confirmation was not really in doubt, and was SKIPPED in every state where
-// an agent write cannot reach this canvas at all -- a refused document (the
-// PM-2047 schema skew flips `connected` false at exactly that moment), a
-// permanent subscribe refusal, a dropped subscription. In those states a
-// tool-call frame carrying `status: 'success'` settled straight to a success
-// glyph over an empty canvas. The fix is not a longer wait: it is naming that
-// third state so the terminal display can be "not confirmed" instead.
-//
-// `lastFrameType !== null` means the current subscription attempt produced a
-// refusal or schema error. The follower clears it before resubscribe, reset,
-// and reconnect attempts, so a transient reconnect window is not mistaken
-// for a permanent refusal. A host that has never answered tells us nothing,
-// so that case keeps the pre-existing immediate-done behaviour.
-const canvasConfirmationState = (workflowId?: string): CanvasConfirmation => {
+function canvasConfirmationState(workflowId?: string): CanvasConfirmation {
   const bound = boundWorkflowId.value ?? undefined
   if (bound === undefined) return 'none'
   if (workflowId !== undefined && !areWorkflowIdsEquivalent(bound, workflowId))
@@ -1092,12 +1046,9 @@ const canvasConfirmationState = (workflowId?: string): CanvasConfirmation => {
   const status = crdtStatus.value
   if (!status.enabled) return 'none'
   if (status.connected) return 'awaiting'
-  return status.lastFrameType === null ? 'none' : 'unavailable'
+  return status.terminal === null ? 'none' : 'unavailable'
 }
-conversationStore.setCanvasSyncGate(
-  canvasConfirmationState,
-  () => crdtStatus.value.outcomes.appliedLive
-)
+conversationStore.setCanvasSyncGate(canvasConfirmationState)
 watch(
   () => crdtStatus.value.outcomes.appliedLive,
   (applied, previouslyApplied) => {
@@ -1131,26 +1082,25 @@ function resumedTurnTabPath(): string | null {
   return context?.id === bound ? context.tabPath : null
 }
 
-// PM-1996: read the active bound workflow itself. Renderer layout state is
-// shared across graphs and can retain discarded tabs, so its global node
-// count cannot answer whether this canvas is empty.
-const boundCanvasNodeCount = computed(
-  () => workflowStore.activeWorkflow?.activeState?.nodes.length ?? 0
+const boundCanvasNodeCount = ref(0)
+function readBoundCanvasNodeCount(): void {
+  boundCanvasNodeCount.value = isBoundWorkflowActive.value
+    ? (workflowStore.activeWorkflow?.activeState?.nodes?.length ?? 0)
+    : 0
+}
+watch([boundWorkflowId, isBoundWorkflowActive], readBoundCanvasNodeCount, {
+  immediate: true
+})
+useEventListener(
+  api,
+  'graphChanged',
+  (event: CustomEvent<ComfyWorkflowJSON>) => {
+    if (isBoundWorkflowActive.value)
+      boundCanvasNodeCount.value = event.detail.nodes?.length ?? 0
+  }
 )
-// PM-1996: set when a turn finishes against a bound, active tab. The notice
-// it drives is `latch && the canvas is still empty`, so a document frame
-// landing late, a hand-placed node, or a tab switch clears it on its own
-// without this needing to watch for any of them.
-const turnFinishedOnBoundTab = ref(false)
-const EMPTY_CANVAS_RELEVANT_TOOLS = new Set([
-  'add_node',
-  'set_widget',
-  'connect',
-  'apply_ops',
-  'insert_workflow',
-  'define_subgraph',
-  'print_workflow'
-])
+
+const completedTurnClaimedCanvasContent = ref(false)
 function completedTurnCanClaimCanvasContent(): boolean {
   const message = conversationMessages.value.at(-1)
   return (
@@ -1158,20 +1108,17 @@ function completedTurnCanClaimCanvasContent(): boolean {
       (part) =>
         part.type === 'tool' &&
         part.ok !== false &&
-        EMPTY_CANVAS_RELEVANT_TOOLS.has(part.name)
+        toolCanClaimCanvasContent(part.name)
     ) ?? false
   )
 }
 const canvasEmptyAfterTurn = computed(
   () =>
-    turnFinishedOnBoundTab.value &&
+    completedTurnClaimedCanvasContent.value &&
     isBoundWorkflowActive.value &&
     boundCanvasNodeCount.value === 0
 )
 
-// A server-side LLM-hop refusal does not reach the browser as a 402. Refresh
-// the authoritative effective-funds verdict after every observed turn
-// completion so both exhaustion and external top-ups converge.
 function refreshBillingAfterTurn(): void {
   if (billingType.value !== 'workspace') return
   void refreshBillingStatus().catch((error: unknown) => {
@@ -1180,24 +1127,6 @@ function refreshBillingAfterTurn(): void {
       errorType: 'error_refreshing_agent_billing_status'
     })
   })
-}
-
-function onTurnIdle(completedTurn: boolean): void {
-  // The immediate idle value on remount is a hydration snapshot, not a
-  // completed turn. A real idle transition is observed after this pass.
-  if (completedTurn) {
-    graphActivity.finishTurn()
-    refreshBillingAfterTurn()
-  }
-  const completedPath = tabActivity.editingTabPath
-  tabActivity.setEditing(null)
-  if (completedPath !== null) tabActivity.markModified(completedPath)
-}
-
-function onTurnActive(turnId: typeof conversationTurnId.value): void {
-  graphActivity.startTurn(turnId)
-  if (tabActivity.editingTabPath === null)
-    tabActivity.setEditing(resumedTurnTabPath())
 }
 
 // Adoption (onWorkflowAdopted) and tab activation (onAgentActiveTab) are the
@@ -1209,21 +1138,29 @@ watch(
   ([value, turnId]) => {
     const active = value !== 'idle'
     const completedTurn = wasTurnActive && !active
-    // PM-1996: only a real idle TRANSITION counts, for the same reason
-    // `completedTurn` exists -- the immediate idle value on remount is a
-    // hydration snapshot. A turn starting arms the opposite edge, so the
-    // notice cannot survive from one turn into the next.
     if (completedTurn)
-      turnFinishedOnBoundTab.value = completedTurnCanClaimCanvasContent()
-    else if (active) turnFinishedOnBoundTab.value = false
+      completedTurnClaimedCanvasContent.value =
+        completedTurnCanClaimCanvasContent()
+    else if (active) completedTurnClaimedCanvasContent.value = false
     wasTurnActive = active
-    if (active) onTurnActive(turnId)
-    else onTurnIdle(completedTurn)
+    if (active) {
+      graphActivity.startTurn(turnId)
+      if (tabActivity.editingTabPath === null)
+        tabActivity.setEditing(resumedTurnTabPath())
+      return
+    }
+    if (completedTurn) {
+      graphActivity.finishTurn()
+      refreshBillingAfterTurn()
+    }
+    const completedPath = tabActivity.editingTabPath
+    tabActivity.setEditing(null)
+    if (completedPath !== null) tabActivity.markModified(completedPath)
   },
   { immediate: true, flush: 'sync' }
 )
 watch([threadId, boundWorkflowId], () => {
-  turnFinishedOnBoundTab.value = false
+  completedTurnClaimedCanvasContent.value = false
 })
 
 const executionErrorStore = useExecutionErrorStore()
@@ -1508,10 +1445,7 @@ onBeforeUnmount(() => {
     // turn resumed in the meantime reading it -- reset to the always-safe
     // default instead of leaving whatever this instance last set.
     resetCanvasSyncGate: () => {
-      conversationStore.setCanvasSyncGate(
-        () => 'none',
-        () => 0
-      )
+      conversationStore.setCanvasSyncGate(() => 'none')
     }
   })
 })

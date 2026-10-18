@@ -391,7 +391,6 @@ function startAgentCrdtFollower(
     (reason) => {
       connected.value = false
       terminal.value = reason
-      lastFrameType.value = null
     }
   )
   const tabId = createUuidv4()
@@ -719,7 +718,7 @@ function startAgentCrdtFollower(
     events.onReset?.(detail.workflowId)
     connected.value = false
     updatesApplied.value = 0
-    lastFrameType.value = null
+    lastFrameType.value = event.type
     lifecycle.clearStaleProbe()
     lifecycle.resetNotifiedGiveUp()
     pendingLiveNodeIds.clear()
@@ -803,13 +802,11 @@ function startAgentCrdtFollower(
     if (!(event instanceof CustomEvent)) return
     const detail = event.detail as { workflowId?: unknown } | null
     if (typeof detail?.workflowId !== 'string') return
-    lastFrameType.value = null
     lifecycle.onSubscribeSent(detail.workflowId)
   }
   function onSocketOpen(): void {
     connected.value = false
     terminal.value = null
-    lastFrameType.value = null
     lifecycle.onReconnected()
     recordDevEvent('reconnected', null)
     bridge.reconnect()

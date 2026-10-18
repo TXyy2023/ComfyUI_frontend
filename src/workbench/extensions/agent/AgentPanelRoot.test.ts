@@ -5932,9 +5932,8 @@ describe('AgentPanelRoot lifecycle', () => {
     // PM-1575: the gate is reset to the always-safe default even though a
     // step three places ahead of it threw.
     expect(setCanvasSyncGate).toHaveBeenCalledOnce()
-    const [gate, outcomeCount] = setCanvasSyncGate.mock.lastCall ?? []
+    const [gate] = setCanvasSyncGate.mock.lastCall ?? []
     expect(gate?.()).toBe('none')
-    expect(outcomeCount?.()).toBe(0)
     expect(reportError).toHaveBeenCalledWith(
       expect.objectContaining({ message: 'detach failed' }),
       expect.objectContaining({
@@ -5973,9 +5972,8 @@ describe('AgentPanelRoot lifecycle', () => {
     panel.unmount()
 
     expect(setCanvasSyncGate).toHaveBeenCalledOnce()
-    const [gate, outcomeCount] = setCanvasSyncGate.mock.lastCall ?? []
+    const [gate] = setCanvasSyncGate.mock.lastCall ?? []
     expect(gate?.()).toBe('none')
-    expect(outcomeCount?.()).toBe(0)
     expect(errorHandler).not.toHaveBeenCalled()
   })
 

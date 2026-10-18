@@ -17,6 +17,7 @@ import {
   toAskOrNoticePart,
   toAskResolution
 } from './agentMessageParts'
+import { toolCanMutateCanvas } from './agentToolClassification'
 import type {
   UndeliverableAskContext,
   UndeliverableAskReason
@@ -55,71 +56,12 @@ type AgentMessageDraftEvent = Extract<
   { type: 'agent_message_draft' }
 >
 
-/**
- * PM-1575: tool names whose execution can plausibly land a CRDT `doc_update`
- * -- the only case `resolveToolCallState` below has anything to wait on. Most
- * agent tools are read-only or purely navigational (`print_workflow`,
- * `list_slots`, `switch_tab`, `remember`, ...) and never touch the doc at
- * all: gating those the same way as a real graph edit strands them at the
- * spinner glyph for the full `STALE_AFTER_MS`, since nothing -- no later
- * `notifyCanvasCaughtUp()` in that turn, ever -- settles them early. Confirmed
- * against every recorded conversation under
- * `browser_tests/fixtures/data/agent/conversations/`: a read-only turn (e.g.
- * `agent-rec-text-only-answer`'s `switch_tab` + `print_workflow`) carries no
- * `graph_ops` at all, so this is not a hypothetical.
- */
-const CANVAS_MUTATING_TOOLS = new Set([
-  'add_node',
-  'delete_node',
-  'set_widget',
-  'connect',
-  'disconnect',
-  'clear_canvas',
-  'apply_ops',
-  'insert_workflow',
-  'define_subgraph'
-])
-
-/**
- * PM-1343 / PM-1586 / PM-1996: what the browser can say about whether a
- * canvas-mutating tool call's effect reached the person's canvas.
- *
- * - `'none'`   — the question does not arise: no bound workflow on the active
- *                tab, so there is no canvas this turn was supposed to change
- *                and nothing to confirm (a headless conversation, a detached
- *                panel, a turn targeting a tab the person is not looking at).
- * - `'awaiting'` — a doc subscription for the bound workflow is live, so a
- *                matching `doc_update` may still arrive. Hold the call's
- *                displayed state and settle it when it does.
- * - `'unavailable'` — a bound workflow is on the active tab AND its doc
- *                subscription is not live (refused, errored, dropped). A
- *                `doc_update` is the ONLY route by which an agent write
- *                reaches this canvas, so confirmation is not late, it is
- *                impossible. Do not wait: settle now, as unconfirmed.
- *
- * The third state is the whole point. Before it existed the gate was a
- * boolean read off `crdtStatus.connected`, which meant the confirmation check
- * ran only when confirmation was never in doubt and was SKIPPED in exactly
- * the states where the write cannot have landed — so an `agent_tool_call`
- * frame saying `status: 'success'` flipped straight to a settled success
- * glyph on an empty canvas. That is the PM-2047 shape ("every write returned
- * draft_committed=true and the next turn still started at zero") and the
- * PM-1343 baseline that survived the schema deploy.
- */
 export type CanvasConfirmation = 'none' | 'awaiting' | 'unavailable'
 
 export interface AgentEventTransport {
   ingest: (event: AgentChatEvent) => void
   settle: () => void
-  /**
-   * PM-1575: called whenever the bound workflow's CRDT follower applies a
-   * fresh doc update, so any tool-call parts this transport held back
-   * pending canvas catch-up (see `canvasConfirmation` below) can settle to
-   * `done`. A no-op when nothing is pending.
-   */
-  notifyCanvasCaughtUp: (workflowId?: string) => void
-  targetWorkflowId: () => string | undefined
-  /** Whether any tool-call part is currently held pending canvas catch-up. */
+  notifyCanvasCaughtUp: (workflowId: string) => void
   hasPendingCanvasSync: () => boolean
   retireAskPart: (askId: string, resolution: AskUserResolution) => void
   /**
@@ -139,39 +81,8 @@ function updateSkill(part: ToolPart, skill: string | null | undefined): void {
 export function createAgentEventTransport(
   message: AssistantMessage,
   emit: (m: AssistantMessage) => void,
-  /**
-   * PM-1575: an `agent_tool_call` frame's own `status` says nothing about
-   * whether the effect it describes has actually reached the canvas -- that
-   * travels a separate, unrelated CRDT doc_update. When this returns `true`
-   * at the moment a tool call reports done, its part's chat-visible `state`
-   * is held at `'streaming'` (matching the in-progress icon/label) instead of
-   * flipping straight to `'done'`, until `notifyCanvasCaughtUp` is called or
-   * `STALE_AFTER_MS` elapses, whichever comes first -- reusing the same
-   * bound the CRDT follower's own passive heartbeat uses
-   * (`agentCrdtDocLifecycle.ts`), rather than inventing a new one. Defaults
-   * to never deferring, so a caller with no canvas to catch up on (or that
-   * never wires this up) keeps the immediate-done behavior.
-   *
-   * PM-1343: returning `'unavailable'` settles the call immediately and marks
-   * it `canvasConfirmed: false` -- see {@link CanvasConfirmation}. The wait
-   * is never lengthened by that branch; only the terminal state changes, from
-   * an unearned success to an honest "not confirmed".
-   */
   canvasConfirmation: (workflowId?: string) => CanvasConfirmation = () =>
     'none',
-  /**
-   * PM-1575: the bound workflow's CRDT `outcomes.appliedLive` counter (or an
-   * equivalent monotonic count of LIVE frames actually applied to the doc --
-   * deliberately excluding a subscribe's own catch-up frame, which is
-   * unrelated to any tool call and would otherwise look like "the matching
-   * update already arrived" to whichever tool call happens to be first after
-   * a (re)subscribe), read fresh whenever this transport needs it -- see
-   * `canvasSyncBaseline` below for why. Defaults to a constant so a caller
-   * with no counter to offer (e.g. a caller that also leaves
-   * `canvasConfirmation` at its default) never spuriously looks "caught
-   * up".
-   */
-  getCanvasSyncOutcomeCount: () => number = () => 0,
   reportUndeliverableAsk: (
     data: AgentAskEvent['data'],
     reason: UndeliverableAskReason,
@@ -196,34 +107,14 @@ export function createAgentEventTransport(
   let settled = false
   let lastTabTargetKey: string | undefined
   let lastWorkflowId: string | undefined
-  // Tool parts whose frame reported done but whose displayed state is held at
-  // 'streaming' pending canvas catch-up. Each has its own bounded timer so a
-  // part that never gets a `notifyCanvasCaughtUp` call still settles.
+  let lastObservedWorkflowId: string | undefined
   const pendingCanvasSync = new Map<
     ToolPart,
     { timer: ReturnType<typeof setTimeout>; workflowId?: string }
   >()
-  // PM-1575: the outcome count as of the last time some tool part actually
-  // claimed a canvas catch-up (see `claimCanvasSyncOutcome` below), starting
-  // at this transport's own creation. `canvasSyncBaseline` below hands each
-  // NEW tool part this shared watermark rather than a fresh
-  // `getCanvasSyncOutcomeCount()` read, because that read is worthless when a
-  // tool call's first-ever frame is already its terminal one (the common
-  // case -- recorded conversations never send a `running` frame at all,
-  // see the file header): capturing the baseline and checking it happen in
-  // the same synchronous call, so a fresh read is trivially equal to itself
-  // regardless of whether a `doc_update` already landed moments earlier. The
-  // watermark instead stays stale across that no-op `notifyCanvasCaughtUp()`
-  // call, so the next part created can see the count has moved since the
-  // watermark was last claimed and settle immediately.
-  let canvasSyncOutcomeWatermark = getCanvasSyncOutcomeCount()
-  // The outcome-count watermark handed to each tool part when it is first
-  // seen (see `canvasSyncOutcomeWatermark` above).
-  const canvasSyncBaseline = new Map<ToolPart, number>()
-
-  function claimCanvasSyncOutcome(): void {
-    canvasSyncOutcomeWatermark = getCanvasSyncOutcomeCount()
-  }
+  const toolWorkflowIds = new Map<ToolPart, string>()
+  const observedRunningTools = new Set<ToolPart>()
+  const unclaimedObservations = new Map<string, number>()
 
   function clearPendingCanvasSyncTimer(part: ToolPart): void {
     const pending = pendingCanvasSync.get(part)
@@ -231,51 +122,51 @@ export function createAgentEventTransport(
     pendingCanvasSync.delete(part)
   }
 
-  /**
-   * PM-1343: `confirmed` records whether the canvas was actually observed to
-   * change, and it is the whole difference between the two callers below. A
-   * live doc frame arriving is an observation; a 30-second timer expiring is
-   * the absence of one. Both used to produce the identical settled-success
-   * row, which is how "the agent says done, the canvas is empty" reached
-   * users as an affirmative checkmark instead of a warning.
-   */
   function settlePendingCanvasSync(part: ToolPart, confirmed: boolean): void {
     clearPendingCanvasSyncTimer(part)
     part.state = 'done'
     part.canvasConfirmed = confirmed
   }
 
-  function flushPendingCanvasSync(confirmed: boolean): void {
+  function flushPendingCanvasSync(): void {
     if (pendingCanvasSync.size === 0) return
     for (const part of pendingCanvasSync.keys())
-      settlePendingCanvasSync(part, confirmed)
-    claimCanvasSyncOutcome()
+      settlePendingCanvasSync(part, false)
     emit(snapshotMessage(message))
   }
 
-  function confirmNextPendingCanvasSync(workflowId?: string): void {
-    let next: ToolPart | undefined
+  function notifyCanvasCaughtUp(workflowId: string): void {
+    lastObservedWorkflowId = workflowId
+    let observed = false
     for (const [part, pending] of pendingCanvasSync) {
       if (
-        workflowId !== undefined &&
         pending.workflowId !== undefined &&
         !areWorkflowIdsEquivalent(pending.workflowId, workflowId)
       )
         continue
-      next = part
-      break
+      toolWorkflowIds.set(part, workflowId)
+      settlePendingCanvasSync(part, true)
+      observed = true
     }
-    if (next === undefined) return
-    settlePendingCanvasSync(next, true)
-    claimCanvasSyncOutcome()
+    for (const part of tools.values()) {
+      const targetWorkflowId = toolWorkflowIds.get(part)
+      if (
+        part.state !== 'streaming' ||
+        !toolCanMutateCanvas(part.name) ||
+        (targetWorkflowId !== undefined &&
+          !areWorkflowIdsEquivalent(targetWorkflowId, workflowId))
+      )
+        continue
+      toolWorkflowIds.set(part, workflowId)
+      observedRunningTools.add(part)
+      observed = true
+    }
+    if (!observed) {
+      const key = workflowId.toLowerCase()
+      unclaimedObservations.set(key, (unclaimedObservations.get(key) ?? 0) + 1)
+      return
+    }
     emit(snapshotMessage(message))
-  }
-
-  function notifyCanvasCaughtUp(workflowId?: string): void {
-    // One observed live frame may confirm one waiting write. It must never
-    // rewrite an older timeout or refusal: the frame may belong to a later
-    // tool call, a collaborator, or a human edit.
-    confirmNextPendingCanvasSync(workflowId)
   }
 
   function hasPendingCanvasSync(): boolean {
@@ -283,99 +174,52 @@ export function createAgentEventTransport(
   }
 
   function dispose(): void {
-    // An abort, drop, reset or hydrate is not an observation of the canvas
-    // either: the held parts are released so no timer outlives this message,
-    // and they are released as unconfirmed, because nothing here saw the
-    // edit land.
-    flushPendingCanvasSync(false)
+    flushPendingCanvasSync()
   }
 
-  /**
-   * PM-1575: applies a finished tool-call frame's outcome to its part, then
-   * decides whether the part's displayed `state` can flip straight to
-   * `'done'` or must be held at `'streaming'` pending canvas catch-up (see
-   * `canvasConfirmation` above). Pulled out of `ingest` so that switch's
-   * `agent_tool_call` branch stays a simple call instead of an inline gate.
-   *
-   * Only a `'success'` outcome can be waited on: it is the only case where a
-   * matching `doc_update` might still be in flight. An `'error'` outcome
-   * means the tool never mutated anything, so there is no forthcoming canvas
-   * change to catch up to -- deferring it anyway just strands the part at the
-   * spinner glyph for up to `STALE_AFTER_MS` (30s) instead of showing the
-   * failure immediately, and, for a turn whose other tool calls also never
-   * touch the canvas, `notifyCanvasCaughtUp` may never fire at all to rescue
-   * it early.
-   *
-   * Even a successful outcome is only worth waiting on when the tool itself
-   * is one that can mutate the doc (`CANVAS_MUTATING_TOOLS` above) -- the
-   * same stranding risk applies to e.g. a successful `print_workflow` or
-   * `switch_tab`, which never produces a `doc_update` at all.
-   */
   function resolveToolCallState(
     part: ToolPart,
     status: 'success' | 'error',
     durationMs: number | undefined
   ): void {
-    // A redelivered terminal frame must not downgrade a write that was
-    // already confirmed by a live document observation.
     if (part.state === 'done' && part.canvasConfirmed === true) return
     part.ok = status === 'success'
     part.durationMs = durationMs
-    // A duplicate or redelivered terminal frame (e.g. a websocket retry) must
-    // not leave a stale timer racing the one this call is about to arm --
-    // clearing unconditionally, before either branch below, is what keeps
-    // that impossible regardless of which branch runs.
     clearPendingCanvasSyncTimer(part)
-    const baseline = canvasSyncBaseline.get(part)
-    canvasSyncBaseline.delete(part)
+    const workflowId = toolWorkflowIds.get(part)
     const confirmation =
-      status === 'success' && CANVAS_MUTATING_TOOLS.has(part.name)
-        ? canvasConfirmation(lastWorkflowId)
+      status === 'success' && toolCanMutateCanvas(part.name)
+        ? canvasConfirmation(workflowId)
         : 'none'
     if (confirmation === 'none') {
       part.state = 'done'
       return
     }
-    if (baseline !== undefined && getCanvasSyncOutcomeCount() > baseline) {
-      // The matching doc_update already applied -- either while the tool
-      // was still running, or before this tool call's first frame ever
-      // reached the transport -- see `canvasSyncBaseline` above. Nothing
-      // left to wait on.
+    const observationKey = workflowId?.toLowerCase()
+    const availableObservations =
+      observationKey === undefined
+        ? 0
+        : (unclaimedObservations.get(observationKey) ?? 0)
+    if (observedRunningTools.delete(part) || availableObservations > 0) {
+      if (availableObservations > 0 && observationKey !== undefined)
+        unclaimedObservations.set(observationKey, availableObservations - 1)
       part.state = 'done'
       part.canvasConfirmed = true
-      claimCanvasSyncOutcome()
       return
     }
     if (confirmation === 'unavailable') {
-      // PM-1343: a bound canvas that cannot receive a `doc_update` will never
-      // confirm this write, so there is nothing to wait for. Settle now --
-      // the person gets the honest answer immediately rather than a spinner
-      // for 30s followed by the same answer -- but settle it as UNCONFIRMED.
       settlePendingCanvasSync(part, false)
       return
     }
     pendingCanvasSync.set(part, {
-      workflowId: lastWorkflowId,
+      workflowId,
       timer: setTimeout(() => {
-        // A follower update can cover several writes while its watcher emits
-        // only once. Preserve strict frame-to-write matching on the fast path,
-        // then use the part's own baseline before calling the timeout an
-        // absence of observation.
-        const confirmed =
-          baseline !== undefined && getCanvasSyncOutcomeCount() > baseline
-        settlePendingCanvasSync(part, confirmed)
-        if (confirmed) claimCanvasSyncOutcome()
+        settlePendingCanvasSync(part, false)
         emit(snapshotMessage(message))
       }, STALE_AFTER_MS)
     })
   }
 
-  /**
-   * Applies one `agent_tool_call` frame: finds or creates the part it
-   * targets, updates its name, and (once the frame reports a terminal
-   * status) resolves its displayed state via `resolveToolCallState`. Pulled
-   * out of `ingest`'s switch so that case is a single call.
-   */
   function handleToolCallEvent(data: AgentToolCallEvent['data']): void {
     let part = tools.get(data.tool_call_id)
     if (!part) {
@@ -387,7 +231,8 @@ export function createAgentEventTransport(
       }
       tools.set(data.tool_call_id, part)
       message.parts.push(part)
-      canvasSyncBaseline.set(part, canvasSyncOutcomeWatermark)
+      const workflowId = lastWorkflowId ?? lastObservedWorkflowId
+      if (workflowId !== undefined) toolWorkflowIds.set(part, workflowId)
     }
     part.name = data.tool_name
     updateSkill(part, data.skill)
@@ -601,7 +446,6 @@ export function createAgentEventTransport(
     ingest,
     settle,
     notifyCanvasCaughtUp,
-    targetWorkflowId: () => lastWorkflowId,
     hasPendingCanvasSync,
     dispose,
     retireAskPart

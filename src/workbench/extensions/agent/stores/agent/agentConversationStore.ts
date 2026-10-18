@@ -262,11 +262,6 @@ export const useAgentConversationStore = defineStore(
     // confirmed because it cannot have arrived. See `CanvasConfirmation`.
     let canvasSyncGate: (workflowId?: string) => CanvasConfirmation = () =>
       'none'
-    // PM-1575: mirrors canvasSyncGate above, for the monotonic doc-update
-    // outcome counter a transport compares its per-tool-call baseline
-    // against (agentEventTransport.ts's canvasSyncBaseline). Same
-    // read-indirectly rule applies.
-    let canvasSyncOutcomeCount: () => number = () => 0
     // PM-1575: settled turns (agent_message_done already applied) whose
     // transport is still holding at least one tool-call part back pending
     // canvas catch-up. clearActive() drops the `transport` slot the moment a
@@ -519,7 +514,6 @@ export const useAgentConversationStore = defineStore(
           message,
           replaceActive,
           (workflowId) => canvasSyncGate(workflowId),
-          () => canvasSyncOutcomeCount(),
           reportUndeliverableAskData
         )
       }
@@ -652,11 +646,9 @@ export const useAgentConversationStore = defineStore(
     }
 
     function setCanvasSyncGate(
-      gate: (workflowId?: string) => CanvasConfirmation,
-      outcomeCount: () => number = () => 0
+      gate: (workflowId?: string) => CanvasConfirmation
     ): void {
       canvasSyncGate = gate
-      canvasSyncOutcomeCount = outcomeCount
     }
 
     /**
@@ -666,7 +658,7 @@ export const useAgentConversationStore = defineStore(
      * catch-up can settle to 'done'. A no-op on a transport with nothing
      * pending.
      */
-    function notifyCanvasCaughtUp(workflowId?: string): void {
+    function notifyCanvasCaughtUp(workflowId: string): void {
       activeSlot.value?.transport.notifyCanvasCaughtUp(workflowId)
       for (const settledTransport of settledActiveTransports) {
         settledTransport.notifyCanvasCaughtUp(workflowId)
@@ -1156,7 +1148,6 @@ export const useAgentConversationStore = defineStore(
             pending.message,
             replaceActive,
             (workflowId) => canvasSyncGate(workflowId),
-            () => canvasSyncOutcomeCount(),
             reportUndeliverableAskData
           )
         }

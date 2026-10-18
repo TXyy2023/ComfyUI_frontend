@@ -10,6 +10,7 @@ import type {
   ActivityPart,
   PartState
 } from '../../../services/agent/agentMessageParts'
+import { isUnconfirmedCanvasWrite } from '../../../services/agent/agentMessageParts'
 import { toolGlyph, toolLabel } from '../../../services/agent/agentToolGlyph'
 
 const { parts, live = false } = defineProps<{
@@ -32,14 +33,11 @@ function labelClass(state: PartState): string {
 function glyphOf(row: ActivityRow): string {
   return row.kind === 'thinking'
     ? 'icon-[lucide--brain]'
-    : toolGlyph(row.name, row.state, row.ok, row.canvasConfirmed)
+    : toolGlyph(row.name, row.state, row)
 }
 
 function labelOf(row: Extract<ActivityRow, { kind: 'tool' }>): string {
-  // PM-1343: an edit nobody saw land is not described in the past tense. The
-  // row keeps the tool's own name so the trace still reads as a sequence of
-  // work, and says plainly that this step was not confirmed on the canvas.
-  if (row.canvasConfirmed === false && row.ok !== false)
+  if (isUnconfirmedCanvasWrite(row))
     return t('agent.toolNotConfirmedOnCanvas', {
       tool: toolLabel(row.name, row.state, t)
     })

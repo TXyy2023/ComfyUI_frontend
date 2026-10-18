@@ -1,5 +1,6 @@
 import { expect } from '@playwright/test'
 import type { Locator, Page } from '@playwright/test'
+import { escapeRegExp } from 'es-toolkit'
 
 import enMessages from '@/locales/en/main.json' with { type: 'json' }
 import type {
@@ -11,7 +12,9 @@ import { HostDoc } from '@e2e/fixtures/agentConversationHostDoc'
 import type { HostFrame } from '@e2e/fixtures/agentConversationHostDoc'
 import { AgentFollowerHostSocket } from '@e2e/fixtures/agentFollowerHostSocket'
 import {
+  BLANK_WORKFLOW,
   bootAgentApp,
+  loadIntoBootWorkflow,
   mockAgentTurnApi,
   mockWorkflowPersistence
 } from '@e2e/fixtures/agentPanelFixture'
@@ -67,19 +70,14 @@ export class AgentRemoteApplyHarness {
           enMessages.agent.worked,
           enMessages.agent.workedNotConfirmedOnCanvas
         ]
-          .map((label) => label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+          .map(escapeRegExp)
           .join('|')})`
       )
     })
   }
 
-  /**
-   * Makes the host refuse `doc_subscribe`, as an overloaded one does. `times`
-   * bounds it: a finite count is a transient overload the follower's own
-   * retry ladder should ride out, and the default never recovers.
-   */
-  refuseDocSubscribes(times?: number): void {
-    this.hostSocket.refuseSubscribes('overloaded', times)
+  refuseDocSubscribes(reason = 'overloaded', times?: number): void {
+    this.hostSocket.refuseSubscribes(reason, times)
   }
 
   /**
@@ -118,10 +116,6 @@ export class AgentRemoteApplyHarness {
   async setUp(): Promise<void> {
     const { page } = this
 
-    // Registered before `bootAgentApp` (called with `objectInfo: 'server'`)
-    // so it wins over the empty handler the boot mocks would otherwise
-    // register for the same route: Playwright runs the most-recently
-    // registered matching handler first.
     await page.route('**/api/object_info', (route) =>
       route.fulfill(jsonRoute(agentReplayNodeDefs))
     )
@@ -141,10 +135,8 @@ export class AgentRemoteApplyHarness {
         'Comfy.Graph.CanvasInfo': false
       }
     })
+    await loadIntoBootWorkflow(page, BLANK_WORKFLOW)
 
-    // Registered only now: the boot mocks blanket-match `**/api/userdata**`
-    // for every method, and the most-recently-registered route wins, so this
-    // has to come after them to take over the workflow-save round trip.
     await mockWorkflowPersistence(page, WORKFLOW_ID)
   }
 

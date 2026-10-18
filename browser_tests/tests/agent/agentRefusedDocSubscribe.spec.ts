@@ -1,5 +1,7 @@
 import { expect } from '@playwright/test'
 
+import enMessages from '@/locales/en/main.json' with { type: 'json' }
+
 import { agentTest as test } from '@e2e/fixtures/agentPanelFixture'
 import {
   AGENT_NODE_IDS,
@@ -17,7 +19,7 @@ test.describe(
       page
     }) => {
       const agent = new AgentRemoteApplyHarness(page)
-      agent.refuseDocSubscribes(2)
+      agent.refuseDocSubscribes('overloaded', 2)
       await agent.setUp()
       await agent.openAndTarget()
       await agent.sendPrompt('add a load image node')
@@ -40,7 +42,7 @@ test.describe(
       page
     }) => {
       const agent = new AgentRemoteApplyHarness(page)
-      agent.refuseDocSubscribes()
+      agent.refuseDocSubscribes('unsupported')
       await agent.setUp()
       await agent.openAndTarget()
       await agent.sendPrompt('add a load image node')
@@ -53,15 +55,11 @@ test.describe(
       agent.finishTurn('Added a Load Image node.')
 
       await agent.expectTurnReportedFinished()
-      // Preserve the assistant reply: it can contain useful explanation or
-      // recovery guidance even when a canvas write was not observed. The
-      // browser-owned summary and glyph below are what prevent that reply
-      // from being presented as confirmed work.
       await expect(
         agent.panel.getByText('Added a Load Image node.').first()
       ).toBeVisible()
       await expect(agent.workSummary).toContainText(
-        'Changes not confirmed on your canvas'
+        enMessages.agent.workedNotConfirmedOnCanvas
       )
 
       await expect(agent.node(nodeId)).toHaveCount(0)

@@ -30,7 +30,6 @@ import type {
 import { useSettingStore } from '@/platform/settings/settingStore'
 import { formatWorkflowSyncErrorDetail } from '@/workbench/extensions/agent/crdt/workflowSyncErrorDetail'
 import { useWorkflowService } from '@/platform/workflow/core/services/workflowService'
-import { areWorkflowIdsEquivalent } from '@/platform/workflow/core/utils/workflowId'
 import type { ComfyWorkflow } from '@/platform/workflow/management/stores/comfyWorkflow'
 import { useWorkflowStore } from '@/platform/workflow/management/stores/workflowStore'
 import type { LGraphNode } from '@/lib/litegraph/src/litegraph'
@@ -143,6 +142,7 @@ import {
 } from './services/agent/agentPaywallPresentation'
 import type { CanvasConfirmation } from './services/agent/agentEventTransport'
 import { toolCanClaimCanvasContent } from './services/agent/agentToolClassification'
+import { areAgentWorkflowIdsEquivalent } from './services/agent/agentWorkflowId'
 import { createAgentEventSource } from './services/agent/agentEventSource'
 import { resolveAgentIdentity } from './services/agent/agentIdentity'
 import { useAgentChatHistoryStore } from './stores/agent/agentChatHistoryStore'
@@ -1040,7 +1040,10 @@ const { activeTurnId: conversationTurnId } = storeToRefs(conversationStore)
 function canvasConfirmationState(workflowId?: string): CanvasConfirmation {
   const bound = boundWorkflowId.value ?? undefined
   if (bound === undefined) return 'none'
-  if (workflowId !== undefined && !areWorkflowIdsEquivalent(bound, workflowId))
+  if (
+    workflowId !== undefined &&
+    !areAgentWorkflowIdsEquivalent(bound, workflowId)
+  )
     return 'unavailable'
   if (!isBoundWorkflowActive.value) return 'unavailable'
   const status = crdtStatus.value

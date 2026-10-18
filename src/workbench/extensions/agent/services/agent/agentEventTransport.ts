@@ -1,7 +1,5 @@
 import type { AgentWsEvent } from '../../schemas/agentApiSchema'
 
-import { areWorkflowIdsEquivalent } from '@/platform/workflow/core/utils/workflowId'
-
 import { STALE_AFTER_MS } from '../../crdt/agentCrdtDocLifecycle'
 import type {
   AskUserResolution,
@@ -18,6 +16,7 @@ import {
   toAskResolution
 } from './agentMessageParts'
 import { toolCanMutateCanvas } from './agentToolClassification'
+import { areAgentWorkflowIdsEquivalent } from './agentWorkflowId'
 import type {
   UndeliverableAskContext,
   UndeliverableAskReason
@@ -135,35 +134,55 @@ export function createAgentEventTransport(
     emit(snapshotMessage(message))
   }
 
-  function notifyCanvasCaughtUp(workflowId: string): void {
-    lastObservedWorkflowId = workflowId
-    let observed = false
+  function confirmsWorkflow(
+    targetWorkflowId: string | undefined,
+    observedWorkflowId: string
+  ): boolean {
+    return (
+      targetWorkflowId === undefined ||
+      areAgentWorkflowIdsEquivalent(targetWorkflowId, observedWorkflowId)
+    )
+  }
+
+  function confirmPendingCanvasSync(workflowId: string): boolean {
+    let confirmed = false
     for (const [part, pending] of pendingCanvasSync) {
-      if (
-        pending.workflowId !== undefined &&
-        !areWorkflowIdsEquivalent(pending.workflowId, workflowId)
-      )
-        continue
+      if (!confirmsWorkflow(pending.workflowId, workflowId)) continue
       toolWorkflowIds.set(part, workflowId)
       settlePendingCanvasSync(part, true)
-      observed = true
+      confirmed = true
     }
+    return confirmed
+  }
+
+  function observeRunningCanvasSync(workflowId: string): boolean {
+    let observed = false
     for (const part of tools.values()) {
       const targetWorkflowId = toolWorkflowIds.get(part)
       if (
         part.state !== 'streaming' ||
         !toolCanMutateCanvas(part.name) ||
-        (targetWorkflowId !== undefined &&
-          !areWorkflowIdsEquivalent(targetWorkflowId, workflowId))
+        !confirmsWorkflow(targetWorkflowId, workflowId)
       )
         continue
       toolWorkflowIds.set(part, workflowId)
       observedRunningTools.add(part)
       observed = true
     }
-    if (!observed) {
-      const key = workflowId.toLowerCase()
-      unclaimedObservations.set(key, (unclaimedObservations.get(key) ?? 0) + 1)
+    return observed
+  }
+
+  function recordUnclaimedObservation(workflowId: string): void {
+    const key = workflowId.toLowerCase()
+    unclaimedObservations.set(key, (unclaimedObservations.get(key) ?? 0) + 1)
+  }
+
+  function notifyCanvasCaughtUp(workflowId: string): void {
+    lastObservedWorkflowId = workflowId
+    const confirmedPending = confirmPendingCanvasSync(workflowId)
+    const observedRunning = observeRunningCanvasSync(workflowId)
+    if (!confirmedPending && !observedRunning) {
+      recordUnclaimedObservation(workflowId)
       return
     }
     emit(snapshotMessage(message))
@@ -175,6 +194,32 @@ export function createAgentEventTransport(
 
   function dispose(): void {
     flushPendingCanvasSync()
+  }
+
+  function consumeObservedCanvasSync(
+    part: ToolPart,
+    workflowId: string | undefined
+  ): boolean {
+    if (observedRunningTools.delete(part)) return true
+    if (workflowId === undefined) return false
+    const key = workflowId.toLowerCase()
+    const available = unclaimedObservations.get(key) ?? 0
+    if (available === 0) return false
+    unclaimedObservations.set(key, available - 1)
+    return true
+  }
+
+  function deferCanvasSync(
+    part: ToolPart,
+    workflowId: string | undefined
+  ): void {
+    pendingCanvasSync.set(part, {
+      workflowId,
+      timer: setTimeout(() => {
+        settlePendingCanvasSync(part, false)
+        emit(snapshotMessage(message))
+      }, STALE_AFTER_MS)
+    })
   }
 
   function resolveToolCallState(
@@ -195,14 +240,7 @@ export function createAgentEventTransport(
       part.state = 'done'
       return
     }
-    const observationKey = workflowId?.toLowerCase()
-    const availableObservations =
-      observationKey === undefined
-        ? 0
-        : (unclaimedObservations.get(observationKey) ?? 0)
-    if (observedRunningTools.delete(part) || availableObservations > 0) {
-      if (availableObservations > 0 && observationKey !== undefined)
-        unclaimedObservations.set(observationKey, availableObservations - 1)
+    if (consumeObservedCanvasSync(part, workflowId)) {
       part.state = 'done'
       part.canvasConfirmed = true
       return
@@ -211,13 +249,7 @@ export function createAgentEventTransport(
       settlePendingCanvasSync(part, false)
       return
     }
-    pendingCanvasSync.set(part, {
-      workflowId,
-      timer: setTimeout(() => {
-        settlePendingCanvasSync(part, false)
-        emit(snapshotMessage(message))
-      }, STALE_AFTER_MS)
-    })
+    deferCanvasSync(part, workflowId)
   }
 
   function handleToolCallEvent(data: AgentToolCallEvent['data']): void {

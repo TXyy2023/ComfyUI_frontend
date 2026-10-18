@@ -31,6 +31,32 @@ function matchingToolStep(
   return previous
 }
 
+function mergeToolStep(previous: ToolRow, part: ToolPart): void {
+  previous.count += 1
+  if (part.state === 'streaming') previous.state = 'streaming'
+  if (part.ok !== undefined) previous.ok = part.ok
+  if (part.canvasConfirmed === false) previous.canvasConfirmed = false
+  else if (
+    part.canvasConfirmed === true &&
+    previous.canvasConfirmed === undefined
+  )
+    previous.canvasConfirmed = true
+}
+
+function toActivityRow(part: ActivityPart): ActivityRow {
+  if (part.type === 'thinking')
+    return { kind: 'thinking', text: part.text, state: part.state }
+  return {
+    kind: 'tool',
+    name: part.name,
+    skill: part.skill,
+    state: part.state,
+    ok: part.ok,
+    canvasConfirmed: part.canvasConfirmed,
+    count: 1
+  }
+}
+
 /**
  * Consecutive calls to the same tool read as one step carrying a count: the
  * transport keeps every call so a single one stays addressable, the trace only
@@ -42,31 +68,11 @@ export function foldActivity(parts: readonly ActivityPart[]): ActivityRow[] {
     if (part.type !== 'thinking') {
       const previous = matchingToolStep(rows.at(-1), part)
       if (previous) {
-        previous.count += 1
-        if (part.state === 'streaming') previous.state = 'streaming'
-        if (part.ok !== undefined) previous.ok = part.ok
-        if (part.canvasConfirmed === false) previous.canvasConfirmed = false
-        else if (
-          part.canvasConfirmed === true &&
-          previous.canvasConfirmed === undefined
-        )
-          previous.canvasConfirmed = true
+        mergeToolStep(previous, part)
         continue
       }
     }
-    rows.push(
-      part.type === 'thinking'
-        ? { kind: 'thinking', text: part.text, state: part.state }
-        : {
-            kind: 'tool',
-            name: part.name,
-            skill: part.skill,
-            state: part.state,
-            ok: part.ok,
-            canvasConfirmed: part.canvasConfirmed,
-            count: 1
-          }
-    )
+    rows.push(toActivityRow(part))
   }
   return rows
 }

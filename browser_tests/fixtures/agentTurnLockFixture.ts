@@ -538,14 +538,18 @@ export class AgentTurnLockHarness {
       name: enMessages.agent.runApproval.run,
       exact: true
     })
-    // WorkSummary.vue renders three labels off the elapsed total: `worked`
-    // alone, `workedForSeconds`, or `workedForMinutes`. Anchoring on the
-    // shared `worked` stem matches all three, so the negative assertions on
-    // this locator cannot go vacuous when a turn is shorter or longer than the
-    // fixture's tool duration, or when the copy is reworded.
+    // A completed turn can either confirm its canvas mutation from a follower
+    // update or conservatively report that the mutation was not observed.
+    // Match both terminal summaries so the reconnect assertions stay focused
+    // on whether the turn is still live.
     this.workSummary = this.panel.getByRole('button', {
       name: new RegExp(
-        `^${enMessages.agent.worked.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`
+        `^(${[
+          enMessages.agent.worked,
+          enMessages.agent.workedNotConfirmedOnCanvas
+        ]
+          .map((label) => label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+          .join('|')})$`
       )
     })
     this.workingRow = this.panel.getByText(enMessages.agent.working, {

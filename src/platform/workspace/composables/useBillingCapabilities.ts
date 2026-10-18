@@ -157,6 +157,15 @@ function useBillingCapabilitiesInternal() {
   const canDowngradeToPersonal = computed(
     () => capabilities.value?.can_downgrade_to_personal ?? false
   )
+  const canManageAutoTopUp = computed(() =>
+    receiveServerFact(
+      'can_manage_auto_top_up',
+      capabilities.value?.can_manage_auto_top_up ?? false
+    )
+  )
+  const autoTopUpSetup = computed(
+    () => resolvedResponse.value?.auto_top_up_setup ?? null
+  )
   const isReady = computed(() => {
     const state = readState.value
     if (state.status === 'idle' || state.status === 'pending') return false
@@ -492,6 +501,8 @@ function useBillingCapabilitiesInternal() {
     canDeleteWorkspace,
     deleteWorkspaceDenial,
     canDowngradeToPersonal,
+    canManageAutoTopUp,
+    autoTopUpSetup,
     isReady,
     hasResolvedCapabilities,
     snapshotAuthoritative,

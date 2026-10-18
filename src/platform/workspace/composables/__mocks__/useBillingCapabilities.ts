@@ -24,6 +24,10 @@ const defaults: ReturnType<typeof realUseBillingCapabilities> = {
   ),
   deleteWorkspaceDenial: computed(() => undefined),
   canDowngradeToPersonal: computed(() => false),
+  canManageAutoTopUp: computed(() =>
+    receiveServerFact('can_manage_auto_top_up', false)
+  ),
+  autoTopUpSetup: computed(() => null),
   isReady: computed(() => true),
   hasResolvedCapabilities: computed(() => true),
   snapshotAuthoritative: computed(() => true),

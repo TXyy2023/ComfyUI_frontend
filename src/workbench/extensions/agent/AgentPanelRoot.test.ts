@@ -8783,6 +8783,36 @@ describe('AgentPanelRoot workflow binding', () => {
     expect(gate?.('wf-42')).toBe('unavailable')
   })
 
+  it('clears an empty-canvas correction when the thread changes', async () => {
+    makeTab('wf-42')
+    mockMessagesEndpoint('wf-42')
+
+    await renderAndSend('inspect this canvas')
+    dispatchApiEvent('agent_tool_call', {
+      tool_call_id: 'call-print-workflow',
+      tool_name: 'print_workflow',
+      status: 'success',
+      duration_ms: 90,
+      thread_id: 'th-1',
+      message_id: 'm-1'
+    })
+    dispatchApiEvent('agent_message_done', {
+      message_id: 'm-1',
+      thread_id: 'th-1'
+    })
+
+    expect(
+      await screen.findByText(i18n.global.t('agent.canvasIsEmptyAfterTurn'))
+    ).toBeVisible()
+
+    useAgentConversationStore().setThreadId('th-next')
+    await nextTick()
+
+    expect(
+      screen.queryByText(i18n.global.t('agent.canvasIsEmptyAfterTurn'))
+    ).not.toBeInTheDocument()
+  })
+
   it('shows a sticky error toast when the doc-host permanently refuses the subscribe', async () => {
     makeTab('wf-42')
     mockMessagesEndpoint('wf-42')

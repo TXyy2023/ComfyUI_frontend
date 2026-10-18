@@ -136,7 +136,7 @@ test(
     await expect(reopenedPanel.getByText('Add node')).toBeVisible()
     await expect(reopenedPanel.getByRole('listitem')).toHaveText([
       'Search nodes',
-      'Add node'
+      enMessages.agent.toolNotConfirmedOnCanvas.replace('{tool}', 'Add node')
     ])
     const restoredThreadId = promptHistory.historyRequestThreadIds.at(-1)
     expect(restoredThreadId).toBeTruthy()
@@ -170,7 +170,7 @@ test(
     await expect(reopenedPanel.getByText('Add node')).toBeVisible()
     await expect(reopenedPanel.getByRole('listitem')).toHaveText([
       'Search nodes',
-      'Add node'
+      enMessages.agent.toolNotConfirmedOnCanvas.replace('{tool}', 'Add node')
     ])
   }
 )
